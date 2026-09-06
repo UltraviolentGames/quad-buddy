@@ -6,7 +6,7 @@ across Blender sessions:
   %APPDATA%/Blender Foundation/Blender/quad_buddy/
     edits.log      human-readable transcript
     edits.jsonl    one JSON object per event (machine analysis)
-    recipes.jsonl  settings that produced a user-marked desired result
+    recipes.jsonl  settings marked favorable or unfavorable by the user
 """
 
 from __future__ import annotations
@@ -241,8 +241,12 @@ def _append_text(event):
     if event.get("details"):
         for key, value in event["details"].items():
             lines.append("  %s=%s" % (key, value))
-    if event.get("desired"):
-        lines.append("  desired=True  note=%s" % event.get("desired_note", ""))
+    if event.get("favorable") or event.get("desired"):
+        lines.append("  favorable=True  rating=%s  note=%s"
+                     % (event.get("rating"), event.get("note") or event.get("desired_note", "")))
+    if event.get("unfavorable"):
+        lines.append("  unfavorable=True  rating=%s  note=%s"
+                     % (event.get("rating"), event.get("note") or event.get("desired_note", "")))
     if event.get("error"):
         lines.append("  error=%s" % event["error"])
     with open(path, "a", encoding="utf-8") as handle:
@@ -311,17 +315,20 @@ def log_edit(context, operator_id, status, *, obj=None, details=None,
     return event
 
 
-def mark_desired(context, note="", rating="good"):
-    """Promote the last finished edit into a reusable recipe."""
+def mark_result(context, note="", rating="good"):
+    """Promote the last finished edit into a labeled recipe (good or bad)."""
     global _last_finished
     source = _last_finished
     if source is None:
         return None, "No finished Quad Buddy edit to mark yet"
 
+    favorable = rating in ("good", "great")
     recipe = {
         "id": "recipe-%s" % datetime.now().strftime("%Y%m%d%H%M%S"),
         "timestamp": _stamp(),
         "rating": rating,
+        "favorable": favorable,
+        "unfavorable": not favorable,
         "note": note or "",
         "source_event_id": source.get("id"),
         "operator": source.get("operator"),
@@ -338,24 +345,32 @@ def mark_desired(context, note="", rating="good"):
         "mirror": source.get("mirror") or [],
     }
 
-    desired_event = dict(source)
-    desired_event["id"] = "qb-desired-%s" % datetime.now().strftime("%Y%m%d%H%M%S")
-    desired_event["timestamp"] = _stamp()
-    desired_event["status"] = "desired"
-    desired_event["desired"] = True
-    desired_event["desired_note"] = note or ""
-    desired_event["recipe_id"] = recipe["id"]
-    desired_event["rating"] = rating
+    marked = dict(source)
+    marked["id"] = "qb-mark-%s" % datetime.now().strftime("%Y%m%d%H%M%S")
+    marked["timestamp"] = _stamp()
+    marked["status"] = "favorable" if favorable else "unfavorable"
+    marked["desired"] = favorable
+    marked["favorable"] = favorable
+    marked["unfavorable"] = not favorable
+    marked["desired_note"] = note or ""
+    marked["note"] = note or ""
+    marked["recipe_id"] = recipe["id"]
+    marked["rating"] = rating
 
     try:
-        _append_text(desired_event)
-        _append_jsonl(jsonl_path(), desired_event)
+        _append_text(marked)
+        _append_jsonl(jsonl_path(), marked)
         _append_jsonl(recipes_path(), recipe)
     except OSError as exc:
         return None, str(exc)
 
-    _last_finished = desired_event
+    _last_finished = marked
     return recipe, recipes_path()
+
+
+def mark_desired(context, note="", rating="good"):
+    """Backwards-compatible alias for mark_result."""
+    return mark_result(context, note=note, rating=rating)
 
 
 def clear_logs():
@@ -396,11 +411,25 @@ def load_jsonl(path):
 def summarize_recipes():
     recipes = load_jsonl(recipes_path())
     by_operator = {}
+    favorable = 0
+    unfavorable = 0
+    by_rating = {}
     for recipe in recipes:
         key = recipe.get("operator", "?")
         by_operator.setdefault(key, []).append(recipe)
+        rating = recipe.get("rating", "?")
+        by_rating[rating] = by_rating.get(rating, 0) + 1
+        if recipe.get("unfavorable") or rating in ("bad", "reject", "worse"):
+            unfavorable += 1
+        elif rating in ("good", "great") or recipe.get("favorable", False):
+            favorable += 1
+        elif rating in ("bad", "reject", "worse"):
+            unfavorable += 1
     return {
         "count": len(recipes),
+        "favorable": favorable,
+        "unfavorable": unfavorable,
+        "by_rating": by_rating,
         "by_operator": {key: len(value) for key, value in by_operator.items()},
         "path": recipes_path(),
         "recipes": recipes,

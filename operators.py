@@ -639,7 +639,7 @@ class QUADBUDDY_OT_open_edit_log(Operator):
         items=[
             ('LOG', "edits.log", "Human-readable transcript"),
             ('JSONL', "edits.jsonl", "Machine-readable events"),
-            ('RECIPES', "recipes.jsonl", "Desired-result recipes"),
+            ('RECIPES', "recipes.jsonl", "Favorable and unfavorable recipes"),
         ],
         default='LOG',
     )
@@ -702,15 +702,15 @@ class QUADBUDDY_OT_clear_edit_log(Operator):
         return {'FINISHED' if ok else 'CANCELLED'}
 
 
-class QUADBUDDY_OT_mark_desired(Operator):
-    """Mark the last finished Quad Buddy edit as a desired result / recipe"""
-    bl_idname = "quadbuddy.mark_desired"
-    bl_label = "Mark Desired Result"
+class QUADBUDDY_OT_mark_result(Operator):
+    """Mark the last finished Quad Buddy edit as favorable or unfavorable"""
+    bl_idname = "quadbuddy.mark_result"
+    bl_label = "Mark Result"
     bl_options = {'REGISTER'}
 
     note: StringProperty(
         name="Note",
-        description="Why this result is the desired one",
+        description="Why this result is good or bad",
         default="",
         maxlen=256,
     )
@@ -718,9 +718,58 @@ class QUADBUDDY_OT_mark_desired(Operator):
     rating: EnumProperty(
         name="Rating",
         items=[
+            ('great', "Great", "Best-so-far / keep these settings"),
             ('good', "Good", "Acceptable / desired result"),
+            ('bad', "Bad", "Unfavorable change — avoid these settings"),
+            ('reject', "Reject", "Strong reject — settings made things worse"),
+        ],
+        default='good',
+    )
+
+    def invoke(self, context, event):
+        self.note = _settings(context).last_desired_note
+        return context.window_manager.invoke_props_dialog(self, width=380)
+
+    def draw(self, context):
+        layout = self.layout
+        last = debug.last_finished()
+        if last is None:
+            layout.label(text="No finished edit yet", icon='ERROR')
+            return
+        layout.label(text="Last: %s" % last.get("operator", "?"), icon='CHECKMARK')
+        fix = last.get("fix_settings") or {}
+        layout.label(text="action=%s  face=%.1f  shape=%.1f"
+                     % (fix.get("action"), fix.get("face_angle_deg", 0),
+                        fix.get("shape_angle_deg", 0)))
+        layout.prop(self, "rating", expand=True)
+        layout.prop(self, "note")
+
+    def execute(self, context):
+        if debug.last_finished() is None:
+            self.report({'ERROR'}, "Run a fix first, then mark it")
+            return {'CANCELLED'}
+        _settings(context).last_desired_note = self.note
+        recipe, path = debug.mark_result(context, note=self.note, rating=self.rating)
+        if recipe is None:
+            self.report({'ERROR'}, path)
+            return {'CANCELLED'}
+        kind = "favorable" if recipe.get("favorable") else "unfavorable"
+        self.report({'INFO'}, "Saved %s (%s) recipe %s" % (kind, self.rating, recipe["id"]))
+        return {'FINISHED'}
+
+
+class QUADBUDDY_OT_mark_desired(Operator):
+    """Mark the last finished edit as a favorable / desired result"""
+    bl_idname = "quadbuddy.mark_desired"
+    bl_label = "Mark Favorable"
+    bl_options = {'REGISTER'}
+
+    note: StringProperty(name="Note", default="", maxlen=256)
+    rating: EnumProperty(
+        name="Rating",
+        items=[
             ('great', "Great", "Best-so-far result"),
-            ('reject', "Reject", "Log that these settings were wrong"),
+            ('good', "Good", "Acceptable / desired result"),
         ],
         default='good',
     )
@@ -735,12 +784,8 @@ class QUADBUDDY_OT_mark_desired(Operator):
         if last is None:
             layout.label(text="No finished edit yet", icon='ERROR')
             return
-        layout.label(text="Last: %s" % last.get("operator", "?"), icon='CHECKMARK')
-        fix = last.get("fix_settings") or {}
-        layout.label(text="action=%s  face=%.1f  shape=%.1f"
-                     % (fix.get("action"), fix.get("face_angle_deg", 0),
-                        fix.get("shape_angle_deg", 0)))
-        layout.prop(self, "rating")
+        layout.label(text="Last: %s" % last.get("operator", "?"), icon='FUND')
+        layout.prop(self, "rating", expand=True)
         layout.prop(self, "note")
 
     def execute(self, context):
@@ -748,27 +793,81 @@ class QUADBUDDY_OT_mark_desired(Operator):
             self.report({'ERROR'}, "Run a fix first, then mark it")
             return {'CANCELLED'}
         _settings(context).last_desired_note = self.note
-        recipe, path = debug.mark_desired(context, note=self.note, rating=self.rating)
+        recipe, path = debug.mark_result(context, note=self.note, rating=self.rating)
         if recipe is None:
             self.report({'ERROR'}, path)
             return {'CANCELLED'}
-        self.report(
-            {'INFO'},
-            "Saved %s recipe %s" % (self.rating, recipe["id"]))
+        self.report({'INFO'}, "Saved favorable (%s) recipe %s" % (self.rating, recipe["id"]))
+        return {'FINISHED'}
+
+
+class QUADBUDDY_OT_mark_unfavorable(Operator):
+    """Mark the last finished edit as an unfavorable / bad result"""
+    bl_idname = "quadbuddy.mark_unfavorable"
+    bl_label = "Mark Unfavorable"
+    bl_options = {'REGISTER'}
+
+    note: StringProperty(
+        name="Note",
+        description="What went wrong (distortion, worse topology, wrong density, etc.)",
+        default="",
+        maxlen=256,
+    )
+    rating: EnumProperty(
+        name="Rating",
+        items=[
+            ('bad', "Bad", "Unfavorable — avoid these settings"),
+            ('reject', "Reject", "Strong reject — made things worse"),
+        ],
+        default='bad',
+    )
+
+    def invoke(self, context, event):
+        self.note = _settings(context).last_desired_note
+        return context.window_manager.invoke_props_dialog(self, width=360)
+
+    def draw(self, context):
+        layout = self.layout
+        last = debug.last_finished()
+        if last is None:
+            layout.label(text="No finished edit yet", icon='ERROR')
+            return
+        layout.label(text="Last: %s" % last.get("operator", "?"), icon='ERROR')
+        fix = last.get("fix_settings") or {}
+        layout.label(text="action=%s  face=%.1f  shape=%.1f"
+                     % (fix.get("action"), fix.get("face_angle_deg", 0),
+                        fix.get("shape_angle_deg", 0)))
+        layout.prop(self, "rating", expand=True)
+        layout.prop(self, "note")
+
+    def execute(self, context):
+        if debug.last_finished() is None:
+            self.report({'ERROR'}, "Run a fix first, then mark it")
+            return {'CANCELLED'}
+        _settings(context).last_desired_note = self.note
+        recipe, path = debug.mark_result(context, note=self.note, rating=self.rating)
+        if recipe is None:
+            self.report({'ERROR'}, path)
+            return {'CANCELLED'}
+        self.report({'WARNING'}, "Saved unfavorable (%s) recipe %s"
+                    % (self.rating, recipe["id"]))
         return {'FINISHED'}
 
 
 class QUADBUDDY_OT_apply_recipe_settings(Operator):
-    """Copy the last desired recipe's fix settings into the scene knobs"""
+    """Copy the last favorable recipe's fix settings into the scene knobs"""
     bl_idname = "quadbuddy.apply_recipe_settings"
-    bl_label = "Load Last Desired Settings"
+    bl_label = "Load Last Favorable Settings"
     bl_options = {'REGISTER', 'UNDO'}
 
     def execute(self, context):
         recipes = debug.load_jsonl(debug.recipes_path())
-        desired = [r for r in recipes if r.get("rating") in ('good', 'great')]
+        desired = [
+            r for r in recipes
+            if r.get("rating") in ('good', 'great') and not r.get("unfavorable")
+        ]
         if not desired:
-            self.report({'ERROR'}, "No desired recipes logged yet")
+            self.report({'ERROR'}, "No favorable recipes logged yet")
             return {'CANCELLED'}
         recipe = desired[-1]
         fix = recipe.get("fix_settings") or {}
@@ -798,7 +897,7 @@ class QUADBUDDY_OT_apply_recipe_settings(Operator):
                 setattr(settings, key, bool(scene[key]))
         if "fix_topology_influence" in scene:
             settings.fix_topology_influence = float(scene["fix_topology_influence"])
-        self.report({'INFO'}, "Loaded recipe %s" % recipe.get("id"))
+        self.report({'INFO'}, "Loaded favorable recipe %s" % recipe.get("id"))
         return {'FINISHED'}
 
 
@@ -812,6 +911,8 @@ classes = (
     QUADBUDDY_OT_report,
     QUADBUDDY_OT_open_edit_log,
     QUADBUDDY_OT_clear_edit_log,
+    QUADBUDDY_OT_mark_result,
     QUADBUDDY_OT_mark_desired,
+    QUADBUDDY_OT_mark_unfavorable,
     QUADBUDDY_OT_apply_recipe_settings,
 )

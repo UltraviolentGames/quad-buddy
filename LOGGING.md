@@ -21,8 +21,10 @@ On this machine that is usually:
 
 1. Tune **Fix Settings** in the Quad Buddy panel
 2. Run a fix / Quick Cleanup
-3. If the result looks right, click **Mark Desired Result**
-4. Ask Cursor to analyse `edits.jsonl` / `recipes.jsonl`
+3. If the result looks right, click **Mark Good**
+4. If it looks wrong, click **Mark Bad** (optional note: distortion, worse density, etc.)
+5. Ask Cursor to analyse `edits.jsonl` / `recipes.jsonl`
 
-Desired recipes store `fix_settings` (angles, grow, include n-gons, action)
-and `scene_settings` (mirror trust knobs), plus before/after problem counts.
+Recipes store `fix_settings`, `scene_settings`, before/after counts, and a
+`favorable` / `unfavorable` flag plus rating (`great` / `good` / `bad` / `reject`).
+Load Last Favorable Settings only applies good/great recipes.

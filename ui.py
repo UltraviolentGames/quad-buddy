@@ -234,7 +234,9 @@ class QUADBUDDY_PT_fixes(BasePanel, Panel):
         debug_box = layout.box()
         debug_box.label(text="Debug / Recipes", icon='CONSOLE')
         debug_box.prop(settings, "debug_edit_log")
-        debug_box.operator("quadbuddy.mark_desired", icon='FUND')
+        row = debug_box.row(align=True)
+        row.operator("quadbuddy.mark_desired", text="Mark Good", icon='FUND')
+        row.operator("quadbuddy.mark_unfavorable", text="Mark Bad", icon='CANCEL')
         debug_box.operator("quadbuddy.apply_recipe_settings", icon='IMPORT')
         row = debug_box.row(align=True)
         row.operator("quadbuddy.open_edit_log", text="Log").which = 'LOG'
@@ -246,7 +248,8 @@ class QUADBUDDY_PT_fixes(BasePanel, Panel):
         note.scale_y = 0.8
         _wrap(note, qb_debug.data_dir(), context.region.width)
         summary = qb_debug.summarize_recipes()
-        note.label(text="Desired recipes: %d" % summary["count"])
+        note.label(text="Favorable: %d   Unfavorable: %d"
+                   % (summary.get("favorable", 0), summary.get("unfavorable", 0)))
 
 
 class QUADBUDDY_PT_mirror(BasePanel, Panel):
