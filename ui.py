@@ -185,8 +185,23 @@ class QUADBUDDY_PT_fixes(BasePanel, Panel):
 
     def draw(self, context):
         layout = self.layout
+        settings = context.scene.quad_buddy
+
         col = layout.column(align=True)
         col.operator("quadbuddy.quick_cleanup", icon='SHADERFX')
+
+        box = layout.box()
+        box.label(text="Fix Settings", icon='PREFERENCES')
+        box.use_property_split = True
+        box.use_property_decorate = False
+        col = box.column(align=True)
+        col.prop(settings, "fix_face_angle")
+        col.prop(settings, "fix_shape_angle")
+        col.prop(settings, "fix_limited_dissolve_angle")
+        col = box.column(align=True)
+        col.use_property_split = False
+        col.prop(settings, "fix_grow_to_neighbours")
+        col.prop(settings, "fix_include_ngons")
 
         col = layout.column(align=True)
         col.enabled = context.mode == 'EDIT_MESH'
@@ -210,16 +225,21 @@ class QUADBUDDY_PT_fixes(BasePanel, Panel):
 
         layout.separator()
         debug_box = layout.box()
-        debug_box.label(text="Debug Edit Log", icon='CONSOLE')
-        debug_box.prop(context.scene.quad_buddy, "debug_edit_log")
+        debug_box.label(text="Debug / Recipes", icon='CONSOLE')
+        debug_box.prop(settings, "debug_edit_log")
+        debug_box.operator("quadbuddy.mark_desired", icon='FUND')
+        debug_box.operator("quadbuddy.apply_recipe_settings", icon='IMPORT')
         row = debug_box.row(align=True)
-        row.operator("quadbuddy.open_edit_log", icon='TEXT')
-        row.operator("quadbuddy.clear_edit_log", icon='TRASH')
+        row.operator("quadbuddy.open_edit_log", text="Log").which = 'LOG'
+        row.operator("quadbuddy.open_edit_log", text="JSONL").which = 'JSONL'
+        row.operator("quadbuddy.open_edit_log", text="Recipes").which = 'RECIPES'
+        debug_box.operator("quadbuddy.clear_edit_log", icon='TRASH')
         from . import debug as qb_debug
-        path = qb_debug.log_path()
         note = debug_box.column(align=True)
         note.scale_y = 0.8
-        _wrap(note, path, context.region.width)
+        _wrap(note, qb_debug.data_dir(), context.region.width)
+        summary = qb_debug.summarize_recipes()
+        note.label(text="Desired recipes: %d" % summary["count"])
 
 
 class QUADBUDDY_PT_mirror(BasePanel, Panel):

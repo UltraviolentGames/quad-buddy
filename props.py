@@ -1,5 +1,7 @@
 """User settings for Quad Buddy."""
 
+from math import radians
+
 import bpy
 from bpy.props import BoolProperty, FloatProperty, FloatVectorProperty, IntProperty
 from bpy.types import PropertyGroup
@@ -283,8 +285,56 @@ class QuadBuddySettings(PropertyGroup):
     debug_edit_log: BoolProperty(
         name="Log Edits",
         description=(
-            "Write every Quad Buddy fix/cleanup attempt to a debug log file "
-            "under Blender's temp directory"
+            "Write every Quad Buddy fix/cleanup attempt to durable logs under "
+            "AppData so they can be analysed later"
         ),
         default=True,
+    )
+
+    # --- default fix recipe (logged + reused by operators) ----------------
+
+    fix_face_angle: FloatProperty(
+        name="Max Face Angle",
+        description="Largest angle between two triangles that may be joined",
+        default=radians(40.0),
+        min=0.0,
+        max=radians(180.0),
+        subtype='ANGLE',
+    )
+
+    fix_shape_angle: FloatProperty(
+        name="Max Shape Angle",
+        description="How far from a rectangle the resulting quad may be",
+        default=radians(40.0),
+        min=0.0,
+        max=radians(180.0),
+        subtype='ANGLE',
+    )
+
+    fix_grow_to_neighbours: BoolProperty(
+        name="Grow Adjacent Tris",
+        description="Pull neighbouring triangles into the selection before merging",
+        default=True,
+    )
+
+    fix_include_ngons: BoolProperty(
+        name="Include N-gons",
+        description="Quick Cleanup also triangulates n-gons before rebuilding quads",
+        default=False,
+    )
+
+    fix_limited_dissolve_angle: FloatProperty(
+        name="Limited Dissolve Angle",
+        description="Angle limit used by Limited Dissolve",
+        default=radians(5.0),
+        min=0.0,
+        max=radians(180.0),
+        subtype='ANGLE',
+    )
+
+    last_desired_note: bpy.props.StringProperty(
+        name="Desired Note",
+        description="Optional note stored with the next Mark Desired Result",
+        default="",
+        maxlen=256,
     )

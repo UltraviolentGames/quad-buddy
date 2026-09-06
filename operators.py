@@ -1,11 +1,11 @@
 """Operators for Quad Buddy: selection, navigation and guided fixes."""
 
-from math import radians
+from math import degrees, radians
 import os
 
 import bmesh
 import bpy
-from bpy.props import BoolProperty, EnumProperty, FloatProperty
+from bpy.props import BoolProperty, EnumProperty, FloatProperty, StringProperty
 from bpy.types import Operator
 
 from . import analysis, debug, overlay
@@ -107,6 +107,53 @@ def _frame_selection(context):
             bpy.ops.view3d.view_selected()
     except (RuntimeError, TypeError):
         pass
+
+
+def _apply_operator_fix_props_to_scene(context, face_angle, shape_angle,
+                                      grow=None, include_ngons=None,
+                                      limited_dissolve=None):
+    settings = _settings(context)
+    settings.fix_face_angle = face_angle
+    settings.fix_shape_angle = shape_angle
+    if grow is not None:
+        settings.fix_grow_to_neighbours = grow
+    if include_ngons is not None:
+        settings.fix_include_ngons = include_ngons
+    if limited_dissolve is not None:
+        settings.fix_limited_dissolve_angle = limited_dissolve
+
+
+def _fix_settings_payload(action, face_angle, shape_angle, grow=None,
+                          include_ngons=None, limited_dissolve=None, extra=None):
+    payload = {
+        "action": action,
+        "face_angle_deg": round(degrees(face_angle), 3),
+        "shape_angle_deg": round(degrees(shape_angle), 3),
+        "face_angle_rad": face_angle,
+        "shape_angle_rad": shape_angle,
+    }
+    if grow is not None:
+        payload["grow_to_neighbours"] = bool(grow)
+    if include_ngons is not None:
+        payload["include_ngons"] = bool(include_ngons)
+    if limited_dissolve is not None:
+        payload["limited_dissolve_deg"] = round(degrees(limited_dissolve), 3)
+        payload["limited_dissolve_rad"] = limited_dissolve
+    if extra:
+        payload.update(extra)
+    return payload
+
+
+def _load_scene_fix_defaults(operator, context):
+    settings = _settings(context)
+    if hasattr(operator, "face_angle"):
+        operator.face_angle = settings.fix_face_angle
+    if hasattr(operator, "shape_angle"):
+        operator.shape_angle = settings.fix_shape_angle
+    if hasattr(operator, "grow_to_neighbours"):
+        operator.grow_to_neighbours = settings.fix_grow_to_neighbours
+    if hasattr(operator, "include_ngons"):
+        operator.include_ngons = settings.fix_include_ngons
 
 
 class QUADBUDDY_OT_toggle_overlay(Operator):
@@ -312,24 +359,30 @@ class QUADBUDDY_OT_fix(Operator):
     def poll(cls, context):
         return context.mode == 'EDIT_MESH'
 
+    def invoke(self, context, event):
+        return self.execute(context)
+
     def execute(self, context):
+        _load_scene_fix_defaults(self, context)
         obj = context.view_layer.objects.active
         before = _face_stats(obj)
-        details = {
-            "action": self.action,
-            "grow_to_neighbours": self.grow_to_neighbours,
-            "face_angle_deg": round(self.face_angle * 180.0 / 3.141592653589793, 2),
-            "shape_angle_deg": round(self.shape_angle * 180.0 / 3.141592653589793, 2),
-        }
+        problems_before = debug.problem_snapshot(obj, context)
+        dissolve = _settings(context).fix_limited_dissolve_angle
+        fix_settings = _fix_settings_payload(
+            self.action, self.face_angle, self.shape_angle,
+            grow=self.grow_to_neighbours,
+            limited_dissolve=dissolve if self.action == 'LIMITED_DISSOLVE' else None,
+        )
+        details = {"source": "fix"}
         debug.log_edit(
             context, self.bl_idname, "attempt",
-            obj=obj, before=before, details=details)
+            obj=obj, before=before, details=details,
+            fix_settings=fix_settings, problems_before=problems_before)
 
         try:
             if self.action == 'TRIS_TO_QUADS':
                 if self.grow_to_neighbours:
-                    grown = _grow_triangle_selection(obj)
-                    details["grown_tris"] = grown
+                    details["grown_tris"] = _grow_triangle_selection(obj)
                 bpy.ops.mesh.tris_convert_to_quads(
                     face_threshold=self.face_angle,
                     shape_threshold=self.shape_angle,
@@ -343,7 +396,7 @@ class QUADBUDDY_OT_fix(Operator):
                 )
             elif self.action == 'LIMITED_DISSOLVE':
                 bpy.ops.mesh.dissolve_limited(
-                    angle_limit=radians(5.0), use_dissolve_boundaries=False)
+                    angle_limit=dissolve, use_dissolve_boundaries=False)
             elif self.action == 'DISSOLVE_DEGENERATE':
                 bpy.ops.mesh.dissolve_degenerate()
             else:
@@ -352,14 +405,22 @@ class QUADBUDDY_OT_fix(Operator):
         except Exception as exc:
             debug.log_edit(
                 context, self.bl_idname, "error",
-                obj=obj, before=before, details=details, error=repr(exc))
+                obj=obj, before=before, details=details,
+                fix_settings=fix_settings, problems_before=problems_before,
+                error=repr(exc))
             raise
 
         after = _face_stats(obj)
+        problems_after = debug.problem_snapshot(obj, context)
         overlay.invalidate()
+        _apply_operator_fix_props_to_scene(
+            context, self.face_angle, self.shape_angle,
+            grow=self.grow_to_neighbours, limited_dissolve=dissolve)
         debug.log_edit(
             context, self.bl_idname, "finished",
-            obj=obj, before=before, after=after, details=details)
+            obj=obj, before=before, after=after, details=details,
+            fix_settings=fix_settings,
+            problems_before=problems_before, problems_after=problems_after)
 
         self.report({'INFO'}, "Triangles %d to %d, n-gons %d to %d"
                     % (before[0], after[0], before[1], after[1]))
@@ -408,37 +469,50 @@ class QUADBUDDY_OT_quick_cleanup(Operator):
         active = context.view_layer.objects.active
         return active is not None and active.type == 'MESH'
 
+    def invoke(self, context, event):
+        return self.execute(context)
+
     def execute(self, context):
+        _load_scene_fix_defaults(self, context)
         obj = context.view_layer.objects.active
         if not _ensure_edit_mode(context, obj):
             debug.log_edit(
                 context, self.bl_idname, "cancelled",
-                obj=obj, details={"reason": "could not enter edit mode"})
+                obj=obj, details={"reason": "could not enter edit mode"},
+                fix_settings=_fix_settings_payload(
+                    "QUICK_CLEANUP", self.face_angle, self.shape_angle,
+                    grow=self.grow_to_neighbours,
+                    include_ngons=self.include_ngons))
             self.report({'ERROR'}, "Could not enter Edit Mode")
             return {'CANCELLED'}
 
         settings = _settings(context)
         tris, ngons = analysis.collect_problem_faces(obj, settings)
         indices = sorted(tris + ngons) if self.include_ngons else tris
+        fix_settings = _fix_settings_payload(
+            "QUICK_CLEANUP", self.face_angle, self.shape_angle,
+            grow=self.grow_to_neighbours, include_ngons=self.include_ngons)
         details = {
-            "include_ngons": self.include_ngons,
-            "grow_to_neighbours": self.grow_to_neighbours,
+            "source": "quick_cleanup",
             "problem_tris": len(tris),
             "problem_ngons": len(ngons),
-            "target_indices": indices[:64],
+            "target_indices": indices[:128],
             "target_count": len(indices),
         }
         if not indices:
             debug.log_edit(
                 context, self.bl_idname, "cancelled",
-                obj=obj, details={**details, "reason": "nothing to clean up"})
+                obj=obj, details={**details, "reason": "nothing to clean up"},
+                fix_settings=fix_settings)
             self.report({'INFO'}, "Nothing to clean up")
             return {'CANCELLED'}
 
         before = _face_stats(obj)
+        problems_before = debug.problem_snapshot(obj, context)
         debug.log_edit(
             context, self.bl_idname, "attempt",
-            obj=obj, before=before, details=details)
+            obj=obj, before=before, details=details,
+            fix_settings=fix_settings, problems_before=problems_before)
 
         try:
             _select_faces(context, obj, indices, extend=False)
@@ -457,17 +531,25 @@ class QUADBUDDY_OT_quick_cleanup(Operator):
         except Exception as exc:
             debug.log_edit(
                 context, self.bl_idname, "error",
-                obj=obj, before=before, details=details, error=repr(exc))
+                obj=obj, before=before, details=details,
+                fix_settings=fix_settings, problems_before=problems_before,
+                error=repr(exc))
             raise
 
         after = _face_stats(obj)
+        problems_after = debug.problem_snapshot(obj, context)
         overlay.invalidate()
+        _apply_operator_fix_props_to_scene(
+            context, self.face_angle, self.shape_angle,
+            grow=self.grow_to_neighbours, include_ngons=self.include_ngons)
 
         remaining_tris, remaining_ngons = analysis.collect_problem_faces(obj, settings)
         details["still_flagged"] = len(remaining_tris) + len(remaining_ngons)
         debug.log_edit(
             context, self.bl_idname, "finished",
-            obj=obj, before=before, after=after, details=details)
+            obj=obj, before=before, after=after, details=details,
+            fix_settings=fix_settings,
+            problems_before=problems_before, problems_after=problems_after)
 
         self.report(
             {'INFO'},
@@ -508,26 +590,49 @@ class QUADBUDDY_OT_report(Operator):
 
 
 class QUADBUDDY_OT_open_edit_log(Operator):
-    """Open the Quad Buddy debug edit log in a text editor"""
+    """Open the human-readable Quad Buddy edit log"""
     bl_idname = "quadbuddy.open_edit_log"
     bl_label = "Open Edit Log"
     bl_options = {'REGISTER'}
 
+    which: EnumProperty(
+        name="File",
+        items=[
+            ('LOG', "edits.log", "Human-readable transcript"),
+            ('JSONL', "edits.jsonl", "Machine-readable events"),
+            ('RECIPES', "recipes.jsonl", "Desired-result recipes"),
+        ],
+        default='LOG',
+    )
+
     def execute(self, context):
-        path = debug.log_path()
+        path = {
+            'LOG': debug.log_path(),
+            'JSONL': debug.jsonl_path(),
+            'RECIPES': debug.recipes_path(),
+        }[self.which]
         if not os.path.isfile(path):
-            debug.log_edit(
-                context, self.bl_idname, "note",
-                details={"message": "log file created on open"})
+            if self.which == 'LOG':
+                debug.log_edit(
+                    context, self.bl_idname, "note",
+                    details={"message": "log file created on open"})
+            else:
+                os.makedirs(debug.data_dir(), exist_ok=True)
+                open(path, "a", encoding="utf-8").close()
 
         text = None
+        abs_path = bpy.path.abspath(path)
         for existing in bpy.data.texts:
-            if bpy.path.abspath(existing.filepath) == bpy.path.abspath(path):
+            if bpy.path.abspath(existing.filepath) == abs_path:
                 text = existing
                 break
         if text is None:
             text = bpy.data.texts.load(path)
-        text.name = "QuadBuddy_EditLog"
+        text.name = {
+            'LOG': "QuadBuddy_EditLog",
+            'JSONL': "QuadBuddy_EditsJSONL",
+            'RECIPES': "QuadBuddy_Recipes",
+        }[self.which]
 
         for window in context.window_manager.windows:
             for area in window.screen.areas:
@@ -539,23 +644,119 @@ class QUADBUDDY_OT_open_edit_log(Operator):
                     self.report({'INFO'}, "Opened %s" % path)
                     return {'FINISHED'}
 
-        self.report({'INFO'}, "Loaded text block QuadBuddy_EditLog (%s)" % path)
+        self.report({'INFO'}, "Loaded %s" % path)
         return {'FINISHED'}
 
 
 class QUADBUDDY_OT_clear_edit_log(Operator):
-    """Delete the Quad Buddy debug edit log"""
+    """Delete Quad Buddy edit and recipe logs"""
     bl_idname = "quadbuddy.clear_edit_log"
-    bl_label = "Clear Edit Log"
+    bl_label = "Clear Edit Logs"
     bl_options = {'REGISTER'}
 
     def execute(self, context):
-        ok, info = debug.clear_log()
+        ok, info = debug.clear_logs()
         if ok:
-            self.report({'INFO'}, "Cleared %s" % info)
+            self.report({'INFO'}, "Cleared logs in %s" % debug.data_dir())
         else:
-            self.report({'ERROR'}, "Could not clear log: %s" % info)
+            self.report({'ERROR'}, "Could not clear logs: %s" % info)
         return {'FINISHED' if ok else 'CANCELLED'}
+
+
+class QUADBUDDY_OT_mark_desired(Operator):
+    """Mark the last finished Quad Buddy edit as a desired result / recipe"""
+    bl_idname = "quadbuddy.mark_desired"
+    bl_label = "Mark Desired Result"
+    bl_options = {'REGISTER'}
+
+    note: StringProperty(
+        name="Note",
+        description="Why this result is the desired one",
+        default="",
+        maxlen=256,
+    )
+
+    rating: EnumProperty(
+        name="Rating",
+        items=[
+            ('good', "Good", "Acceptable / desired result"),
+            ('great', "Great", "Best-so-far result"),
+            ('reject', "Reject", "Log that these settings were wrong"),
+        ],
+        default='good',
+    )
+
+    def invoke(self, context, event):
+        self.note = _settings(context).last_desired_note
+        return context.window_manager.invoke_props_dialog(self, width=360)
+
+    def draw(self, context):
+        layout = self.layout
+        last = debug.last_finished()
+        if last is None:
+            layout.label(text="No finished edit yet", icon='ERROR')
+            return
+        layout.label(text="Last: %s" % last.get("operator", "?"), icon='CHECKMARK')
+        fix = last.get("fix_settings") or {}
+        layout.label(text="action=%s  face=%.1f  shape=%.1f"
+                     % (fix.get("action"), fix.get("face_angle_deg", 0),
+                        fix.get("shape_angle_deg", 0)))
+        layout.prop(self, "rating")
+        layout.prop(self, "note")
+
+    def execute(self, context):
+        if debug.last_finished() is None:
+            self.report({'ERROR'}, "Run a fix first, then mark it")
+            return {'CANCELLED'}
+        _settings(context).last_desired_note = self.note
+        recipe, path = debug.mark_desired(context, note=self.note, rating=self.rating)
+        if recipe is None:
+            self.report({'ERROR'}, path)
+            return {'CANCELLED'}
+        self.report(
+            {'INFO'},
+            "Saved %s recipe %s" % (self.rating, recipe["id"]))
+        return {'FINISHED'}
+
+
+class QUADBUDDY_OT_apply_recipe_settings(Operator):
+    """Copy the last desired recipe's fix settings into the scene knobs"""
+    bl_idname = "quadbuddy.apply_recipe_settings"
+    bl_label = "Load Last Desired Settings"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        recipes = debug.load_jsonl(debug.recipes_path())
+        desired = [r for r in recipes if r.get("rating") in ('good', 'great')]
+        if not desired:
+            self.report({'ERROR'}, "No desired recipes logged yet")
+            return {'CANCELLED'}
+        recipe = desired[-1]
+        fix = recipe.get("fix_settings") or {}
+        settings = _settings(context)
+        if "face_angle_rad" in fix:
+            settings.fix_face_angle = fix["face_angle_rad"]
+        elif "face_angle_deg" in fix:
+            settings.fix_face_angle = radians(fix["face_angle_deg"])
+        if "shape_angle_rad" in fix:
+            settings.fix_shape_angle = fix["shape_angle_rad"]
+        elif "shape_angle_deg" in fix:
+            settings.fix_shape_angle = radians(fix["shape_angle_deg"])
+        if "grow_to_neighbours" in fix:
+            settings.fix_grow_to_neighbours = bool(fix["grow_to_neighbours"])
+        if "include_ngons" in fix:
+            settings.fix_include_ngons = bool(fix["include_ngons"])
+        if "limited_dissolve_rad" in fix:
+            settings.fix_limited_dissolve_angle = fix["limited_dissolve_rad"]
+        scene = recipe.get("scene_settings") or {}
+        for key in (
+            "respect_mirror", "require_editmode_display", "require_on_cage",
+            "require_merge",
+        ):
+            if key in scene:
+                setattr(settings, key, bool(scene[key]))
+        self.report({'INFO'}, "Loaded recipe %s" % recipe.get("id"))
+        return {'FINISHED'}
 
 
 classes = (
@@ -568,4 +769,6 @@ classes = (
     QUADBUDDY_OT_report,
     QUADBUDDY_OT_open_edit_log,
     QUADBUDDY_OT_clear_edit_log,
+    QUADBUDDY_OT_mark_desired,
+    QUADBUDDY_OT_apply_recipe_settings,
 )
