@@ -295,8 +295,11 @@ class QuadBuddySettings(PropertyGroup):
 
     fix_face_angle: FloatProperty(
         name="Max Face Angle",
-        description="Largest angle between two triangles that may be joined",
-        default=radians(40.0),
+        description=(
+            "Largest angle between triangle normals that may be joined. "
+            "Use 180° for aggressive cleanup on remeshed / AI meshes"
+        ),
+        default=radians(180.0),
         min=0.0,
         max=radians(180.0),
         subtype='ANGLE',
@@ -304,8 +307,11 @@ class QuadBuddySettings(PropertyGroup):
 
     fix_shape_angle: FloatProperty(
         name="Max Shape Angle",
-        description="How far from a rectangle the resulting quad may be",
-        default=radians(40.0),
+        description=(
+            "How far from a rectangle the resulting quad may be. "
+            "Use 180° to allow non-rectangular quads"
+        ),
+        default=radians(180.0),
         min=0.0,
         max=radians(180.0),
         subtype='ANGLE',
@@ -330,6 +336,17 @@ class QuadBuddySettings(PropertyGroup):
         min=0.0,
         max=radians(180.0),
         subtype='ANGLE',
+    )
+
+    fix_topology_influence: FloatProperty(
+        name="Topology Influence",
+        description=(
+            "Blender 5+ Tris-to-Quads topology weight. Docs recommend about 1.0–1.3 "
+            "with Max Angle at 180°"
+        ),
+        default=1.2,
+        min=0.0,
+        max=2.0,
     )
 
     last_desired_note: bpy.props.StringProperty(

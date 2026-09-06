@@ -197,11 +197,18 @@ class QUADBUDDY_PT_fixes(BasePanel, Panel):
         col = box.column(align=True)
         col.prop(settings, "fix_face_angle")
         col.prop(settings, "fix_shape_angle")
+        col.prop(settings, "fix_topology_influence")
         col.prop(settings, "fix_limited_dissolve_angle")
         col = box.column(align=True)
         col.use_property_split = False
         col.prop(settings, "fix_grow_to_neighbours")
         col.prop(settings, "fix_include_ngons")
+        tip = box.column(align=True)
+        tip.scale_y = 0.8
+        _wrap(tip,
+              "Cleanup now classifies tris. Isolated triangles in a quad field "
+              "cannot be fixed by Alt+J alone — the status bar explains why.",
+              context.region.width)
 
         col = layout.column(align=True)
         col.enabled = context.mode == 'EDIT_MESH'

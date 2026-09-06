@@ -118,6 +118,7 @@ def scene_settings_snapshot(context=None):
         "fix_include_ngons": bool(settings.fix_include_ngons),
         "fix_limited_dissolve_deg": round(
             degrees(settings.fix_limited_dissolve_angle), 3),
+        "fix_topology_influence": float(settings.fix_topology_influence),
     }
 
 

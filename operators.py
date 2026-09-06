@@ -8,7 +8,7 @@ import bpy
 from bpy.props import BoolProperty, EnumProperty, FloatProperty, StringProperty
 from bpy.types import Operator
 
-from . import analysis, debug, overlay
+from . import analysis, cleanup, debug, overlay
 
 _cursor = {}
 
@@ -109,22 +109,9 @@ def _frame_selection(context):
         pass
 
 
-def _apply_operator_fix_props_to_scene(context, face_angle, shape_angle,
-                                      grow=None, include_ngons=None,
-                                      limited_dissolve=None):
-    settings = _settings(context)
-    settings.fix_face_angle = face_angle
-    settings.fix_shape_angle = shape_angle
-    if grow is not None:
-        settings.fix_grow_to_neighbours = grow
-    if include_ngons is not None:
-        settings.fix_include_ngons = include_ngons
-    if limited_dissolve is not None:
-        settings.fix_limited_dissolve_angle = limited_dissolve
-
-
 def _fix_settings_payload(action, face_angle, shape_angle, grow=None,
-                          include_ngons=None, limited_dissolve=None, extra=None):
+                          include_ngons=None, limited_dissolve=None,
+                          topology_influence=None, extra=None):
     payload = {
         "action": action,
         "face_angle_deg": round(degrees(face_angle), 3),
@@ -139,6 +126,8 @@ def _fix_settings_payload(action, face_angle, shape_angle, grow=None,
     if limited_dissolve is not None:
         payload["limited_dissolve_deg"] = round(degrees(limited_dissolve), 3)
         payload["limited_dissolve_rad"] = limited_dissolve
+    if topology_influence is not None:
+        payload["topology_influence"] = float(topology_influence)
     if extra:
         payload.update(extra)
     return payload
@@ -154,6 +143,25 @@ def _load_scene_fix_defaults(operator, context):
         operator.grow_to_neighbours = settings.fix_grow_to_neighbours
     if hasattr(operator, "include_ngons"):
         operator.include_ngons = settings.fix_include_ngons
+    if hasattr(operator, "topology_influence"):
+        operator.topology_influence = settings.fix_topology_influence
+
+
+def _apply_operator_fix_props_to_scene(context, face_angle, shape_angle,
+                                      grow=None, include_ngons=None,
+                                      limited_dissolve=None,
+                                      topology_influence=None):
+    settings = _settings(context)
+    settings.fix_face_angle = face_angle
+    settings.fix_shape_angle = shape_angle
+    if grow is not None:
+        settings.fix_grow_to_neighbours = grow
+    if include_ngons is not None:
+        settings.fix_include_ngons = include_ngons
+    if limited_dissolve is not None:
+        settings.fix_limited_dissolve_angle = limited_dissolve
+    if topology_influence is not None:
+        settings.fix_topology_influence = topology_influence
 
 
 class QUADBUDDY_OT_toggle_overlay(Operator):
@@ -331,7 +339,7 @@ class QUADBUDDY_OT_fix(Operator):
     face_angle: FloatProperty(
         name="Max Face Angle",
         description="Largest angle between two triangles that may be joined",
-        default=radians(40.0),
+        default=radians(180.0),
         min=0.0,
         max=radians(180.0),
         subtype='ANGLE',
@@ -340,7 +348,7 @@ class QUADBUDDY_OT_fix(Operator):
     shape_angle: FloatProperty(
         name="Max Shape Angle",
         description="How far from a rectangle the resulting quad may be",
-        default=radians(40.0),
+        default=radians(180.0),
         min=0.0,
         max=radians(180.0),
         subtype='ANGLE',
@@ -353,6 +361,14 @@ class QUADBUDDY_OT_fix(Operator):
             "picked triangle can still be joined with its partner"
         ),
         default=True,
+    )
+
+    topology_influence: FloatProperty(
+        name="Topology Influence",
+        description="Prefer quads that continue existing grid flow (Blender 5+)",
+        default=1.2,
+        min=0.0,
+        max=2.0,
     )
 
     @classmethod
@@ -372,6 +388,7 @@ class QUADBUDDY_OT_fix(Operator):
             self.action, self.face_angle, self.shape_angle,
             grow=self.grow_to_neighbours,
             limited_dissolve=dissolve if self.action == 'LIMITED_DISSOLVE' else None,
+            topology_influence=self.topology_influence,
         )
         details = {"source": "fix"}
         debug.log_edit(
@@ -383,17 +400,31 @@ class QUADBUDDY_OT_fix(Operator):
             if self.action == 'TRIS_TO_QUADS':
                 if self.grow_to_neighbours:
                     details["grown_tris"] = _grow_triangle_selection(obj)
-                bpy.ops.mesh.tris_convert_to_quads(
-                    face_threshold=self.face_angle,
-                    shape_threshold=self.shape_angle,
-                )
+                try:
+                    bpy.ops.mesh.tris_convert_to_quads(
+                        face_threshold=self.face_angle,
+                        shape_threshold=self.shape_angle,
+                        topology_influence=self.topology_influence,
+                    )
+                except TypeError:
+                    bpy.ops.mesh.tris_convert_to_quads(
+                        face_threshold=self.face_angle,
+                        shape_threshold=self.shape_angle,
+                    )
             elif self.action == 'REQUAD_NGONS':
                 bpy.ops.mesh.quads_convert_to_tris(
                     quad_method='BEAUTY', ngon_method='BEAUTY')
-                bpy.ops.mesh.tris_convert_to_quads(
-                    face_threshold=self.face_angle,
-                    shape_threshold=self.shape_angle,
-                )
+                try:
+                    bpy.ops.mesh.tris_convert_to_quads(
+                        face_threshold=self.face_angle,
+                        shape_threshold=self.shape_angle,
+                        topology_influence=self.topology_influence,
+                    )
+                except TypeError:
+                    bpy.ops.mesh.tris_convert_to_quads(
+                        face_threshold=self.face_angle,
+                        shape_threshold=self.shape_angle,
+                    )
             elif self.action == 'LIMITED_DISSOLVE':
                 bpy.ops.mesh.dissolve_limited(
                     angle_limit=dissolve, use_dissolve_boundaries=False)
@@ -415,7 +446,8 @@ class QUADBUDDY_OT_fix(Operator):
         overlay.invalidate()
         _apply_operator_fix_props_to_scene(
             context, self.face_angle, self.shape_angle,
-            grow=self.grow_to_neighbours, limited_dissolve=dissolve)
+            grow=self.grow_to_neighbours, limited_dissolve=dissolve,
+            topology_influence=self.topology_influence)
         debug.log_edit(
             context, self.bl_idname, "finished",
             obj=obj, before=before, after=after, details=details,
@@ -435,7 +467,7 @@ class QUADBUDDY_OT_quick_cleanup(Operator):
 
     face_angle: FloatProperty(
         name="Max Face Angle",
-        default=radians(40.0),
+        default=radians(180.0),
         min=0.0,
         max=radians(180.0),
         subtype='ANGLE',
@@ -443,7 +475,7 @@ class QUADBUDDY_OT_quick_cleanup(Operator):
 
     shape_angle: FloatProperty(
         name="Max Shape Angle",
-        default=radians(40.0),
+        default=radians(180.0),
         min=0.0,
         max=radians(180.0),
         subtype='ANGLE',
@@ -464,6 +496,14 @@ class QUADBUDDY_OT_quick_cleanup(Operator):
         default=True,
     )
 
+    topology_influence: FloatProperty(
+        name="Topology Influence",
+        description="Prefer quads that continue existing grid flow (Blender 5+). Try 1.0–1.3",
+        default=1.2,
+        min=0.0,
+        max=2.0,
+    )
+
     @classmethod
     def poll(cls, context):
         active = context.view_layer.objects.active
@@ -482,7 +522,8 @@ class QUADBUDDY_OT_quick_cleanup(Operator):
                 fix_settings=_fix_settings_payload(
                     "QUICK_CLEANUP", self.face_angle, self.shape_angle,
                     grow=self.grow_to_neighbours,
-                    include_ngons=self.include_ngons))
+                    include_ngons=self.include_ngons,
+                    topology_influence=self.topology_influence))
             self.report({'ERROR'}, "Could not enter Edit Mode")
             return {'CANCELLED'}
 
@@ -491,7 +532,15 @@ class QUADBUDDY_OT_quick_cleanup(Operator):
         indices = sorted(tris + ngons) if self.include_ngons else tris
         fix_settings = _fix_settings_payload(
             "QUICK_CLEANUP", self.face_angle, self.shape_angle,
-            grow=self.grow_to_neighbours, include_ngons=self.include_ngons)
+            grow=self.grow_to_neighbours, include_ngons=self.include_ngons,
+            topology_influence=self.topology_influence)
+
+        if not indices and not self.include_ngons:
+            # Still run classifier on all tris — maybe mirror-forgiven ones can pair
+            pass
+
+        before = _face_stats(obj)
+        problems_before = debug.problem_snapshot(obj, context)
         details = {
             "source": "quick_cleanup",
             "problem_tris": len(tris),
@@ -499,35 +548,28 @@ class QUADBUDDY_OT_quick_cleanup(Operator):
             "target_indices": indices[:128],
             "target_count": len(indices),
         }
-        if not indices:
-            debug.log_edit(
-                context, self.bl_idname, "cancelled",
-                obj=obj, details={**details, "reason": "nothing to clean up"},
-                fix_settings=fix_settings)
-            self.report({'INFO'}, "Nothing to clean up")
-            return {'CANCELLED'}
-
-        before = _face_stats(obj)
-        problems_before = debug.problem_snapshot(obj, context)
         debug.log_edit(
             context, self.bl_idname, "attempt",
             obj=obj, before=before, details=details,
             fix_settings=fix_settings, problems_before=problems_before)
 
         try:
-            _select_faces(context, obj, indices, extend=False)
-
-            if self.include_ngons:
+            if self.include_ngons and ngons:
+                _select_faces(context, obj, ngons, extend=False)
                 bpy.ops.mesh.quads_convert_to_tris(
                     quad_method='BEAUTY', ngon_method='BEAUTY')
 
-            if self.grow_to_neighbours:
-                details["grown_tris"] = _grow_triangle_selection(obj)
-
-            bpy.ops.mesh.tris_convert_to_quads(
-                face_threshold=self.face_angle,
-                shape_threshold=self.shape_angle,
+            diag = cleanup.run_cleanup(
+                obj,
+                face_angle=self.face_angle,
+                shape_angle=self.shape_angle,
+                topology_influence=self.topology_influence,
+                collapse_degenerate=True,
+                solve_sandwiches=True,
+                target_indices=None,
             )
+            details["cleanup"] = diag
+            details["explanation"] = cleanup.explain(diag)
         except Exception as exc:
             debug.log_edit(
                 context, self.bl_idname, "error",
@@ -541,21 +583,18 @@ class QUADBUDDY_OT_quick_cleanup(Operator):
         overlay.invalidate()
         _apply_operator_fix_props_to_scene(
             context, self.face_angle, self.shape_angle,
-            grow=self.grow_to_neighbours, include_ngons=self.include_ngons)
+            grow=self.grow_to_neighbours, include_ngons=self.include_ngons,
+            topology_influence=self.topology_influence)
 
-        remaining_tris, remaining_ngons = analysis.collect_problem_faces(obj, settings)
-        details["still_flagged"] = len(remaining_tris) + len(remaining_ngons)
         debug.log_edit(
             context, self.bl_idname, "finished",
             obj=obj, before=before, after=after, details=details,
             fix_settings=fix_settings,
             problems_before=problems_before, problems_after=problems_after)
 
-        self.report(
-            {'INFO'},
-            "Triangles %d to %d, n-gons %d to %d, %d still flagged"
-            % (before[0], after[0], before[1], after[1],
-               len(remaining_tris) + len(remaining_ngons)))
+        message = cleanup.explain(details["cleanup"])
+        level = 'INFO' if details["cleanup"].get("mesh_changed") else 'WARNING'
+        self.report({level}, message)
         return {'FINISHED'}
 
 
@@ -748,6 +787,8 @@ class QUADBUDDY_OT_apply_recipe_settings(Operator):
             settings.fix_include_ngons = bool(fix["include_ngons"])
         if "limited_dissolve_rad" in fix:
             settings.fix_limited_dissolve_angle = fix["limited_dissolve_rad"]
+        if "topology_influence" in fix:
+            settings.fix_topology_influence = float(fix["topology_influence"])
         scene = recipe.get("scene_settings") or {}
         for key in (
             "respect_mirror", "require_editmode_display", "require_on_cage",
@@ -755,6 +796,8 @@ class QUADBUDDY_OT_apply_recipe_settings(Operator):
         ):
             if key in scene:
                 setattr(settings, key, bool(scene[key]))
+        if "fix_topology_influence" in scene:
+            settings.fix_topology_influence = float(scene["fix_topology_influence"])
         self.report({'INFO'}, "Loaded recipe %s" % recipe.get("id"))
         return {'FINISHED'}
 
