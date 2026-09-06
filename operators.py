@@ -1,13 +1,14 @@
 """Operators for Quad Buddy: selection, navigation and guided fixes."""
 
 from math import radians
+import os
 
 import bmesh
 import bpy
 from bpy.props import BoolProperty, EnumProperty, FloatProperty
 from bpy.types import Operator
 
-from . import analysis, overlay
+from . import analysis, debug, overlay
 
 _cursor = {}
 
@@ -314,32 +315,51 @@ class QUADBUDDY_OT_fix(Operator):
     def execute(self, context):
         obj = context.view_layer.objects.active
         before = _face_stats(obj)
+        details = {
+            "action": self.action,
+            "grow_to_neighbours": self.grow_to_neighbours,
+            "face_angle_deg": round(self.face_angle * 180.0 / 3.141592653589793, 2),
+            "shape_angle_deg": round(self.shape_angle * 180.0 / 3.141592653589793, 2),
+        }
+        debug.log_edit(
+            context, self.bl_idname, "attempt",
+            obj=obj, before=before, details=details)
 
-        if self.action == 'TRIS_TO_QUADS':
-            if self.grow_to_neighbours:
-                _grow_triangle_selection(obj)
-            bpy.ops.mesh.tris_convert_to_quads(
-                face_threshold=self.face_angle,
-                shape_threshold=self.shape_angle,
-            )
-        elif self.action == 'REQUAD_NGONS':
-            bpy.ops.mesh.quads_convert_to_tris(
-                quad_method='BEAUTY', ngon_method='BEAUTY')
-            bpy.ops.mesh.tris_convert_to_quads(
-                face_threshold=self.face_angle,
-                shape_threshold=self.shape_angle,
-            )
-        elif self.action == 'LIMITED_DISSOLVE':
-            bpy.ops.mesh.dissolve_limited(
-                angle_limit=radians(5.0), use_dissolve_boundaries=False)
-        elif self.action == 'DISSOLVE_DEGENERATE':
-            bpy.ops.mesh.dissolve_degenerate()
-        else:
-            bpy.ops.mesh.quads_convert_to_tris(
-                quad_method='BEAUTY', ngon_method='BEAUTY')
+        try:
+            if self.action == 'TRIS_TO_QUADS':
+                if self.grow_to_neighbours:
+                    grown = _grow_triangle_selection(obj)
+                    details["grown_tris"] = grown
+                bpy.ops.mesh.tris_convert_to_quads(
+                    face_threshold=self.face_angle,
+                    shape_threshold=self.shape_angle,
+                )
+            elif self.action == 'REQUAD_NGONS':
+                bpy.ops.mesh.quads_convert_to_tris(
+                    quad_method='BEAUTY', ngon_method='BEAUTY')
+                bpy.ops.mesh.tris_convert_to_quads(
+                    face_threshold=self.face_angle,
+                    shape_threshold=self.shape_angle,
+                )
+            elif self.action == 'LIMITED_DISSOLVE':
+                bpy.ops.mesh.dissolve_limited(
+                    angle_limit=radians(5.0), use_dissolve_boundaries=False)
+            elif self.action == 'DISSOLVE_DEGENERATE':
+                bpy.ops.mesh.dissolve_degenerate()
+            else:
+                bpy.ops.mesh.quads_convert_to_tris(
+                    quad_method='BEAUTY', ngon_method='BEAUTY')
+        except Exception as exc:
+            debug.log_edit(
+                context, self.bl_idname, "error",
+                obj=obj, before=before, details=details, error=repr(exc))
+            raise
 
         after = _face_stats(obj)
         overlay.invalidate()
+        debug.log_edit(
+            context, self.bl_idname, "finished",
+            obj=obj, before=before, after=after, details=details)
 
         self.report({'INFO'}, "Triangles %d to %d, n-gons %d to %d"
                     % (before[0], after[0], before[1], after[1]))
@@ -391,35 +411,64 @@ class QUADBUDDY_OT_quick_cleanup(Operator):
     def execute(self, context):
         obj = context.view_layer.objects.active
         if not _ensure_edit_mode(context, obj):
+            debug.log_edit(
+                context, self.bl_idname, "cancelled",
+                obj=obj, details={"reason": "could not enter edit mode"})
             self.report({'ERROR'}, "Could not enter Edit Mode")
             return {'CANCELLED'}
 
         settings = _settings(context)
         tris, ngons = analysis.collect_problem_faces(obj, settings)
         indices = sorted(tris + ngons) if self.include_ngons else tris
+        details = {
+            "include_ngons": self.include_ngons,
+            "grow_to_neighbours": self.grow_to_neighbours,
+            "problem_tris": len(tris),
+            "problem_ngons": len(ngons),
+            "target_indices": indices[:64],
+            "target_count": len(indices),
+        }
         if not indices:
+            debug.log_edit(
+                context, self.bl_idname, "cancelled",
+                obj=obj, details={**details, "reason": "nothing to clean up"})
             self.report({'INFO'}, "Nothing to clean up")
             return {'CANCELLED'}
 
         before = _face_stats(obj)
-        _select_faces(context, obj, indices, extend=False)
+        debug.log_edit(
+            context, self.bl_idname, "attempt",
+            obj=obj, before=before, details=details)
 
-        if self.include_ngons:
-            bpy.ops.mesh.quads_convert_to_tris(
-                quad_method='BEAUTY', ngon_method='BEAUTY')
+        try:
+            _select_faces(context, obj, indices, extend=False)
 
-        if self.grow_to_neighbours:
-            _grow_triangle_selection(obj)
+            if self.include_ngons:
+                bpy.ops.mesh.quads_convert_to_tris(
+                    quad_method='BEAUTY', ngon_method='BEAUTY')
 
-        bpy.ops.mesh.tris_convert_to_quads(
-            face_threshold=self.face_angle,
-            shape_threshold=self.shape_angle,
-        )
+            if self.grow_to_neighbours:
+                details["grown_tris"] = _grow_triangle_selection(obj)
+
+            bpy.ops.mesh.tris_convert_to_quads(
+                face_threshold=self.face_angle,
+                shape_threshold=self.shape_angle,
+            )
+        except Exception as exc:
+            debug.log_edit(
+                context, self.bl_idname, "error",
+                obj=obj, before=before, details=details, error=repr(exc))
+            raise
 
         after = _face_stats(obj)
         overlay.invalidate()
 
         remaining_tris, remaining_ngons = analysis.collect_problem_faces(obj, settings)
+        details["still_flagged"] = len(remaining_tris) + len(remaining_ngons)
+        debug.log_edit(
+            context, self.bl_idname, "finished",
+            obj=obj, before=before, after=after, details=details)
+
         self.report(
             {'INFO'},
             "Triangles %d to %d, n-gons %d to %d, %d still flagged"
@@ -458,6 +507,57 @@ class QUADBUDDY_OT_report(Operator):
         return {'FINISHED'}
 
 
+class QUADBUDDY_OT_open_edit_log(Operator):
+    """Open the Quad Buddy debug edit log in a text editor"""
+    bl_idname = "quadbuddy.open_edit_log"
+    bl_label = "Open Edit Log"
+    bl_options = {'REGISTER'}
+
+    def execute(self, context):
+        path = debug.log_path()
+        if not os.path.isfile(path):
+            debug.log_edit(
+                context, self.bl_idname, "note",
+                details={"message": "log file created on open"})
+
+        text = None
+        for existing in bpy.data.texts:
+            if bpy.path.abspath(existing.filepath) == bpy.path.abspath(path):
+                text = existing
+                break
+        if text is None:
+            text = bpy.data.texts.load(path)
+        text.name = "QuadBuddy_EditLog"
+
+        for window in context.window_manager.windows:
+            for area in window.screen.areas:
+                if area.type == 'TEXT_EDITOR':
+                    for space in area.spaces:
+                        if space.type == 'TEXT_EDITOR':
+                            space.text = text
+                    area.tag_redraw()
+                    self.report({'INFO'}, "Opened %s" % path)
+                    return {'FINISHED'}
+
+        self.report({'INFO'}, "Loaded text block QuadBuddy_EditLog (%s)" % path)
+        return {'FINISHED'}
+
+
+class QUADBUDDY_OT_clear_edit_log(Operator):
+    """Delete the Quad Buddy debug edit log"""
+    bl_idname = "quadbuddy.clear_edit_log"
+    bl_label = "Clear Edit Log"
+    bl_options = {'REGISTER'}
+
+    def execute(self, context):
+        ok, info = debug.clear_log()
+        if ok:
+            self.report({'INFO'}, "Cleared %s" % info)
+        else:
+            self.report({'ERROR'}, "Could not clear log: %s" % info)
+        return {'FINISHED' if ok else 'CANCELLED'}
+
+
 classes = (
     QUADBUDDY_OT_toggle_overlay,
     QUADBUDDY_OT_refresh,
@@ -466,4 +566,6 @@ classes = (
     QUADBUDDY_OT_fix,
     QUADBUDDY_OT_quick_cleanup,
     QUADBUDDY_OT_report,
+    QUADBUDDY_OT_open_edit_log,
+    QUADBUDDY_OT_clear_edit_log,
 )

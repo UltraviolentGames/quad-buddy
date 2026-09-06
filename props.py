@@ -277,3 +277,14 @@ class QuadBuddySettings(PropertyGroup):
         description="Zoom the view to each problem face when stepping through them",
         default=True,
     )
+
+    # --- debug ------------------------------------------------------------
+
+    debug_edit_log: BoolProperty(
+        name="Log Edits",
+        description=(
+            "Write every Quad Buddy fix/cleanup attempt to a debug log file "
+            "under Blender's temp directory"
+        ),
+        default=True,
+    )

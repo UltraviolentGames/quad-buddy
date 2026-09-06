@@ -208,6 +208,19 @@ class QUADBUDDY_PT_fixes(BasePanel, Panel):
         keys.label(text="Shift Alt B    previous problem")
         keys.label(text="Shift Alt J    tris to quads")
 
+        layout.separator()
+        debug_box = layout.box()
+        debug_box.label(text="Debug Edit Log", icon='CONSOLE')
+        debug_box.prop(context.scene.quad_buddy, "debug_edit_log")
+        row = debug_box.row(align=True)
+        row.operator("quadbuddy.open_edit_log", icon='TEXT')
+        row.operator("quadbuddy.clear_edit_log", icon='TRASH')
+        from . import debug as qb_debug
+        path = qb_debug.log_path()
+        note = debug_box.column(align=True)
+        note.scale_y = 0.8
+        _wrap(note, path, context.region.width)
+
 
 class QUADBUDDY_PT_mirror(BasePanel, Panel):
     bl_parent_id = "QUADBUDDY_PT_main"
