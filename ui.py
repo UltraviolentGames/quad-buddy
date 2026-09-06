@@ -190,6 +190,26 @@ class QUADBUDDY_PT_fixes(BasePanel, Panel):
         col = layout.column(align=True)
         col.operator("quadbuddy.quick_cleanup", icon='SHADERFX')
 
+        zip_box = layout.box()
+        zip_box.label(text="Zip Triangles", icon='MOD_TRIANGULATE')
+        zip_col = zip_box.column(align=True)
+        zip_col.enabled = context.mode == 'EDIT_MESH'
+        zip_col.operator("quadbuddy.zip_triangles", icon='AUTOMERGE_ON')
+        zip_box.use_property_split = True
+        zip_box.use_property_decorate = False
+        zip_props = zip_box.column(align=True)
+        zip_props.prop(settings, "zip_max_distance")
+        zip_toggle = zip_box.column(align=True)
+        zip_toggle.use_property_split = False
+        zip_toggle.prop(settings, "zip_respect_features")
+        zip_toggle.prop(settings, "zip_debug")
+        zip_tip = zip_box.column(align=True)
+        zip_tip.scale_y = 0.8
+        _wrap(zip_tip,
+              "Walks two triangles through a quad strip by flipping diagonals, "
+              "then dissolves them into one quad. Vertices never move or merge.",
+              context.region.width)
+
         box = layout.box()
         box.label(text="Fix Settings", icon='PREFERENCES')
         box.use_property_split = True
@@ -207,7 +227,8 @@ class QUADBUDDY_PT_fixes(BasePanel, Panel):
         tip.scale_y = 0.8
         _wrap(tip,
               "Cleanup now classifies tris. Isolated triangles in a quad field "
-              "cannot be fixed by Alt+J alone — the status bar explains why.",
+              "cannot be fixed by Alt+J alone — use Zip Triangles, or read the "
+              "status bar explanation.",
               context.region.width)
 
         col = layout.column(align=True)

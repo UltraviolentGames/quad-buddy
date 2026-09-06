@@ -5,10 +5,10 @@ import os
 
 import bmesh
 import bpy
-from bpy.props import BoolProperty, EnumProperty, FloatProperty, StringProperty
+from bpy.props import BoolProperty, EnumProperty, FloatProperty, IntProperty, StringProperty
 from bpy.types import Operator
 
-from . import analysis, cleanup, debug, overlay
+from . import analysis, cleanup, debug, overlay, zip_triangles
 
 _cursor = {}
 
@@ -456,6 +456,149 @@ class QUADBUDDY_OT_fix(Operator):
 
         self.report({'INFO'}, "Triangles %d to %d, n-gons %d to %d"
                     % (before[0], after[0], before[1], after[1]))
+        return {'FINISHED'}
+
+
+class QUADBUDDY_OT_zip_triangles(Operator):
+    """Propagate paired triangles through a quad strip until they cancel into a quad"""
+    bl_idname = "quadbuddy.zip_triangles"
+    bl_label = "Zip Triangles"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    max_distance: IntProperty(
+        name="Maximum Search Distance",
+        description="Maximum number of quad faces the strip may cross",
+        default=16,
+        min=1,
+        soft_max=64,
+        max=256,
+    )
+
+    debug_output: BoolProperty(
+        name="Debug Output",
+        description="Print pathfinding and propagation details to the Info log",
+        default=False,
+    )
+
+    respect_features: BoolProperty(
+        name="Respect Feature Edges",
+        description="Refuse strips that cross seam, sharp, crease, or bevel-weight edges",
+        default=True,
+    )
+
+    @classmethod
+    def poll(cls, context):
+        active = context.view_layer.objects.active
+        return (
+            active is not None
+            and active.type == 'MESH'
+            and context.mode == 'EDIT_MESH'
+        )
+
+    def invoke(self, context, event):
+        settings = _settings(context)
+        self.max_distance = settings.zip_max_distance
+        self.debug_output = settings.zip_debug
+        self.respect_features = settings.zip_respect_features
+        return self.execute(context)
+
+    def execute(self, context):
+        obj = context.view_layer.objects.active
+        if obj is None or obj.type != 'MESH':
+            self.report({'ERROR'}, "Select a mesh object")
+            return {'CANCELLED'}
+
+        settings = _settings(context)
+        settings.zip_max_distance = self.max_distance
+        settings.zip_debug = self.debug_output
+        settings.zip_respect_features = self.respect_features
+
+        mesh = obj.data
+        bm = bmesh.from_edit_mesh(mesh)
+        bm.faces.ensure_lookup_table()
+        selected = [f for f in bm.faces if f.select]
+        before = _face_stats(obj)
+        problems_before = debug.problem_snapshot(obj, context)
+        vert_count_before = len(bm.verts)
+        positions_before = {v.index: v.co.copy() for v in bm.verts}
+
+        fix_settings = {
+            "action": "ZIP_TRIANGLES",
+            "max_distance": int(self.max_distance),
+            "respect_features": bool(self.respect_features),
+            "debug_output": bool(self.debug_output),
+        }
+        details = {
+            "source": "zip_triangles",
+            "selected_faces": len(selected),
+            "selected_tris": sum(1 for f in selected if len(f.verts) == 3),
+        }
+        debug.log_edit(
+            context, self.bl_idname, "attempt",
+            obj=obj, before=before, details=details,
+            fix_settings=fix_settings, problems_before=problems_before)
+
+        try:
+            result = zip_triangles.zip_selected_triangles(
+                bm,
+                selected,
+                max_distance=self.max_distance,
+                respect_features=self.respect_features,
+                debug_enabled=self.debug_output,
+                validate_first=True,
+            )
+        except Exception as exc:
+            debug.log_edit(
+                context, self.bl_idname, "error",
+                obj=obj, before=before, details=details,
+                fix_settings=fix_settings, problems_before=problems_before,
+                error=repr(exc))
+            raise
+
+        details["pairs_resolved"] = result.pairs_resolved
+        details["message"] = result.message
+        if result.debug.lines:
+            details["debug_lines"] = result.debug.lines[-64:]
+
+        if not result.ok:
+            debug.log_edit(
+                context, self.bl_idname, "cancelled",
+                obj=obj, before=before, details=details,
+                fix_settings=fix_settings, problems_before=problems_before)
+            if self.debug_output:
+                for line in result.debug.lines:
+                    self.report({'INFO'}, "[Zip] %s" % line)
+            self.report({'WARNING'}, result.message)
+            return {'CANCELLED'}
+
+        bm.verts.ensure_lookup_table()
+        details["vertex_count_unchanged"] = len(bm.verts) == vert_count_before
+        details["positions_unchanged"] = all(
+            (vert.co - positions_before[vert.index]).length <= 1e-9
+            for vert in bm.verts if vert.index in positions_before
+        )
+
+        for face in bm.faces:
+            face.select = False
+        for quad in result.resulting_quads:
+            if quad.is_valid:
+                quad.select = True
+        bm.select_flush(False)
+        bmesh.update_edit_mesh(mesh, loop_triangles=True, destructive=True)
+
+        after = _face_stats(obj)
+        problems_after = debug.problem_snapshot(obj, context)
+        overlay.invalidate()
+        debug.log_edit(
+            context, self.bl_idname, "finished",
+            obj=obj, before=before, after=after, details=details,
+            fix_settings=fix_settings,
+            problems_before=problems_before, problems_after=problems_after)
+
+        if self.debug_output:
+            for line in result.debug.lines:
+                self.report({'INFO'}, "[Zip] %s" % line)
+        self.report({'INFO'}, result.message)
         return {'FINISHED'}
 
 
@@ -907,6 +1050,7 @@ classes = (
     QUADBUDDY_OT_select_problems,
     QUADBUDDY_OT_step_problem,
     QUADBUDDY_OT_fix,
+    QUADBUDDY_OT_zip_triangles,
     QUADBUDDY_OT_quick_cleanup,
     QUADBUDDY_OT_report,
     QUADBUDDY_OT_open_edit_log,

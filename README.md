@@ -9,7 +9,8 @@ Requires **Blender 4.2+** (tested on 5.0.1).
 - **Viewport overlay** â€” tris in red, n-gons in magenta, optional poles / non-manifold / boundaries
 - **Mirror-aware** â€” triangles that sit on a trusted Mirror seam are marked green (paired into a symmetric quad by the reflected half), not flagged as problems
 - **Inspector** â€” pick a face and get a short diagnosis plus a one-click fix when one exists
-- **Quick Cleanup** â€” select flagged faces and merge triangle pairs back into quads
+- **Quick Cleanup** — select flagged faces and merge triangle pairs back into quads
+- **Zip Triangles** — walk two tris through a quad strip (diagonal flips, no vertex merge) until they cancel into one quad
 - **Keyboard shortcuts** for toggle, step-through, and tris-to-quads
 
 Mirror forgiveness only applies when the Mirror modifier has **Display in Edit Mode** on (and **Merge** on by default). That matches how you actually model with the mirrored half visible.

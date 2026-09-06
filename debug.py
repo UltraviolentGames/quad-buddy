@@ -119,6 +119,9 @@ def scene_settings_snapshot(context=None):
         "fix_limited_dissolve_deg": round(
             degrees(settings.fix_limited_dissolve_angle), 3),
         "fix_topology_influence": float(settings.fix_topology_influence),
+        "zip_max_distance": int(settings.zip_max_distance),
+        "zip_debug": bool(settings.zip_debug),
+        "zip_respect_features": bool(settings.zip_respect_features),
     }
 
 

@@ -355,3 +355,34 @@ class QuadBuddySettings(PropertyGroup):
         default="",
         maxlen=256,
     )
+
+    # --- Zip Triangles ----------------------------------------------------
+
+    zip_max_distance: IntProperty(
+        name="Maximum Search Distance",
+        description=(
+            "How many quad faces Zip Triangles may cross while searching for a "
+            "compatible triangle pair"
+        ),
+        default=16,
+        min=1,
+        soft_max=64,
+        max=256,
+    )
+
+    zip_debug: BoolProperty(
+        name="Debug Output",
+        description=(
+            "Report Zip Triangles pathfinding, scoring, and propagation steps "
+            "in the Info log"
+        ),
+        default=False,
+    )
+
+    zip_respect_features: BoolProperty(
+        name="Respect Feature Edges",
+        description=(
+            "Refuse strips that cross seam, sharp, crease, or bevel-weight edges"
+        ),
+        default=True,
+    )
