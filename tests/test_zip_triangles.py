@@ -445,6 +445,46 @@ def test_undo_via_mesh_roundtrip():
     bpy.data.meshes.remove(snapshot)
 
 
+def test_l_shaped_strip():
+    """Triangle above the strip must corner-turn onto the horizontal row."""
+    bm = _new_bm()
+    # Grid:
+    #   A
+    #   0--1--2--3--B
+    # with quads (0,1)(1,2)(2,3) and tri A-top of first, tri B-end of last.
+    cols = 3
+    apex = bm.verts.new((0.5, 1.5, 0.0))
+    end = bm.verts.new((cols + 0.5, 0.5, 0.0))
+    grid = [[bm.verts.new((float(x), float(y), 0.0)) for x in range(cols + 1)]
+            for y in range(2)]
+    quads = []
+    for x in range(cols):
+        quads.append(bm.faces.new((
+            grid[0][x], grid[0][x + 1], grid[1][x + 1], grid[1][x],
+        )))
+    # Top triangle shares the top edge of the first quad (grid[1][0]-grid[1][1])
+    tri_top = bm.faces.new((apex, grid[1][0], grid[1][1]))
+    tri_end = bm.faces.new((end, grid[1][cols], grid[0][cols]))
+    bm.faces.ensure_lookup_table()
+    before = _positions(bm)
+    result = _zip(bm, [tri_top, tri_end])
+    _assert(result.ok, result.message)
+    _assert_positions_unchanged(before, bm, "l_strip")
+    tris, _, _ = _count_sides(bm)
+    _assert(tris == 0, "L-strip left tris behind")
+    bm.free()
+
+
+def test_corridor_selection_prefers_selected_quads():
+    bm, a, b, quads = _make_strip_with_end_tris(cols=3, horizontal=True)
+    # Select only start tri + the strip quads (not the end tri) — should still find b.
+    result = _zip(bm, [a] + quads)
+    _assert(result.ok, result.message)
+    tris, _, _ = _count_sides(bm)
+    _assert(tris == 0, "corridor zip left tris")
+    bm.free()
+
+
 TESTS = [
     test_one_quad_between,
     test_several_quads,
@@ -463,6 +503,8 @@ TESTS = [
     test_single_selection_finds_partner,
     test_failure_leaves_mesh_unchanged,
     test_undo_via_mesh_roundtrip,
+    test_l_shaped_strip,
+    test_corridor_selection_prefers_selected_quads,
 ]
 
 

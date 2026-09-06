@@ -338,8 +338,13 @@ def validate_quad_strip(bm, path, respect_features=True, debug=None):
     return True, "ok"
 
 
-def find_quad_strip(bm, start_tri, end_tri, max_distance, respect_features=True, debug=None):
-    """BFS through quads for the shortest path from start_tri to end_tri."""
+def find_quad_strip(bm, start_tri, end_tri, max_distance, respect_features=True,
+                    debug=None, allowed_faces=None):
+    """BFS through quads for the shortest path from start_tri to end_tri.
+
+    If allowed_faces is set, only intermediate quads from that set are used
+    (endpoints may sit just outside). Callers can retry without the restriction.
+    """
     if start_tri is end_tri:
         return None
     if len(start_tri.verts) != 3 or len(end_tri.verts) != 3:
@@ -381,6 +386,9 @@ def find_quad_strip(bm, start_tri, end_tri, max_distance, respect_features=True,
                     debug.log("skip non-quad face %d (%d sides)" % (other.index, len(other.verts)))
                 continue
 
+            if allowed_faces is not None and other not in allowed_faces:
+                continue
+
             next_quads = quads_crossed + 1
             if next_quads > max_distance:
                 continue
@@ -392,7 +400,7 @@ def find_quad_strip(bm, start_tri, end_tri, max_distance, respect_features=True,
 
 
 def find_nearest_triangle(bm, start_tri, max_distance, candidates=None,
-                          respect_features=True, debug=None):
+                          respect_features=True, debug=None, allowed_faces=None):
     """Search for the nearest compatible triangle connected through quads."""
     best = None
     best_score = -1e18
@@ -401,14 +409,20 @@ def find_nearest_triangle(bm, start_tri, max_distance, candidates=None,
         tris = [f for f in bm.faces if len(f.verts) == 3 and f is not start_tri]
 
     if debug:
-        debug.log("search from tri %d among %d candidates (max_distance=%d)"
-                  % (start_tri.index, len(tris), max_distance))
+        debug.log("search from tri %d among %d candidates (max_distance=%d corridor=%s)"
+                  % (start_tri.index, len(tris), max_distance,
+                     "yes" if allowed_faces else "no"))
 
     for other in tris:
-        path = find_quad_strip(bm, start_tri, other, max_distance, respect_features, debug)
+        path = find_quad_strip(
+            bm, start_tri, other, max_distance, respect_features, debug,
+            allowed_faces=allowed_faces)
         if path is None:
             continue
         score = score_quad_strip(path, debug)
+        if allowed_faces is not None:
+            # Prefer paths that stay inside the user-selected corridor.
+            score += 50.0
         if score > best_score:
             best_score = score
             best = (other, path, score)
@@ -421,22 +435,68 @@ def find_nearest_triangle(bm, start_tri, max_distance, candidates=None,
     return best[0], best[1]
 
 
-def find_triangle_pair(bm, selected_tris, max_distance, respect_features=True, debug=None):
+def _tris_touching_corridor(bm, corridor, exclude=None):
+    """Triangles that share an edge with any face in the corridor set."""
+    exclude = exclude or set()
+    found = []
+    seen = set()
+    for face in corridor:
+        if not face.is_valid:
+            continue
+        for edge in face.edges:
+            for other in edge.link_faces:
+                if other is face or other in exclude or other in seen:
+                    continue
+                if len(other.verts) == 3:
+                    seen.add(other)
+                    found.append(other)
+    return found
+
+
+def find_triangle_pair(bm, selected_tris, max_distance, respect_features=True,
+                       debug=None, corridor=None):
     """Resolve selection into one (start, end, path), a list of pairs, or an error."""
     tris = [f for f in selected_tris if f.is_valid and len(f.verts) == 3]
     if debug:
         debug.log("triangles considered=%s" % [f.index for f in tris])
     if len(tris) == 0:
         return None, "Select one or more triangular faces."
+
+    def _search_from(start, candidate_tris, allowed):
+        return find_nearest_triangle(
+            bm, start, max_distance, candidates=candidate_tris,
+            respect_features=respect_features, debug=debug,
+            allowed_faces=allowed)
+
     if len(tris) == 1:
-        other, path = find_nearest_triangle(
-            bm, tris[0], max_distance, respect_features=respect_features, debug=debug)
+        start = tris[0]
+        # Prefer partners reachable through the selected quad corridor.
+        if corridor:
+            corridor_partners = _tris_touching_corridor(bm, corridor, exclude={start})
+            if debug:
+                debug.log("corridor partners=%s"
+                          % [f.index for f in corridor_partners])
+            other, path = _search_from(
+                start, corridor_partners or None, allowed=corridor)
+            if path is None:
+                other, path = _search_from(start, None, allowed=corridor)
+            if path is None:
+                other, path = _search_from(start, None, allowed=None)
+        else:
+            other, path = _search_from(start, None, allowed=None)
         if path is None:
             return None, "No compatible triangle found within the search distance."
-        return (tris[0], other, path), "ok"
+        return (start, other, path), "ok"
+
     if len(tris) == 2:
-        path = find_quad_strip(
-            bm, tris[0], tris[1], max_distance, respect_features, debug)
+        path = None
+        if corridor:
+            path = find_quad_strip(
+                bm, tris[0], tris[1], max_distance, respect_features, debug,
+                allowed_faces=corridor)
+        if path is None:
+            path = find_quad_strip(
+                bm, tris[0], tris[1], max_distance, respect_features, debug)
         if path is None:
             return None, "The selected triangles are not connected by a valid quad strip."
         return (tris[0], tris[1], path), "ok"
@@ -449,7 +509,14 @@ def find_triangle_pair(bm, selected_tris, max_distance, respect_features=True, d
         unused_list = list(unused)
         for i, a in enumerate(unused_list):
             for b in unused_list[i + 1:]:
-                path = find_quad_strip(bm, a, b, max_distance, respect_features, debug)
+                path = None
+                if corridor:
+                    path = find_quad_strip(
+                        bm, a, b, max_distance, respect_features, debug,
+                        allowed_faces=corridor)
+                if path is None:
+                    path = find_quad_strip(
+                        bm, a, b, max_distance, respect_features, debug)
                 if path is None:
                     continue
                 path_set = set(path)
@@ -525,7 +592,11 @@ def _apply_loop_data(bm, face, *snapshots):
 
 
 def _propagation_candidates(tri, quad, shared):
-    """Return possible (new_quad_verts, new_tri_verts) splits for one walk step."""
+    """Return possible (new_quad_verts, new_tri_verts) splits for one walk step.
+
+    Includes opposite-edge advances *and* 90° corner turns so an L-shaped
+    strip can keep the moving triangle on the exit edge toward the next face.
+    """
     ordered = _ordered_quad_cycle(quad, shared)
     if ordered is None:
         return []
@@ -540,33 +611,55 @@ def _propagation_candidates(tri, quad, shared):
     else:
         ref = _face_normal(quad)
 
-    # Pentagon: apex, v0, v3, v2, v1. Far edge is v2-v3.
-    # Diagonal v0-v2 → quad(apex,v0,v2,v1) + tri(v0,v2,v3)
-    # Diagonal v1-v3 → quad(apex,v0,v3,v1) + tri(v1,v2,v3)
+    # Pentagon boundary: apex, v0, v3, v2, v1
+    # Opposite landings (straight strip): diagonals v0-v2 / v1-v3
+    # Side landings (corner turn): diagonals apex-v3 / apex-v2
     candidates = []
     options = (
-        ((apex, v0, v2, v1), (v0, v2, v3)),
-        ((apex, v0, v3, v1), (v1, v2, v3)),
+        ((apex, v0, v2, v1), (v0, v2, v3), "opposite"),
+        ((apex, v0, v3, v1), (v1, v2, v3), "opposite"),
+        ((apex, v3, v2, v1), (apex, v0, v3), "turn"),
+        ((apex, v0, v3, v2), (apex, v2, v1), "turn"),
     )
-    for quad_verts, tri_verts in options:
+    for quad_verts, tri_verts, kind in options:
+        if len(set(quad_verts)) != 4 or len(set(tri_verts)) != 3:
+            continue
         ok_q, _ = validate_resulting_patch(list(quad_verts), 4, ref)
         ok_t, _ = validate_resulting_patch(list(tri_verts), 3, ref)
         if not (ok_q and ok_t):
             continue
         qscore = score_quad_candidate(list(quad_verts), ref)
+        if kind == "opposite":
+            qscore += 2.0  # slight preference for straight flow when either works
         candidates.append({
             "quad_verts": quad_verts,
             "tri_verts": tri_verts,
             "score": qscore,
             "ref": ref,
+            "kind": kind,
             "src_tri": tri,
             "src_quad": quad,
         })
     return candidates
 
 
-def propagate_triangle_once(bm, tri, next_quad, debug=None):
-    """Walk tri one step through next_quad. Returns (new_tri, message)."""
+def _tri_verts_share_edge_with_face(tri_verts, face):
+    """True when two of tri_verts form an existing edge of face."""
+    if face is None or not face.is_valid:
+        return False
+    tri_set = set(tri_verts)
+    for edge in face.edges:
+        if set(edge.verts) <= tri_set:
+            return True
+    return False
+
+
+def propagate_triangle_once(bm, tri, next_quad, toward_face=None, debug=None):
+    """Walk tri one step through next_quad. Returns (new_tri, message).
+
+    If toward_face is set, prefer a re-tessellation whose new triangle lands on
+    an edge shared with toward_face (straight or corner).
+    """
     shared = _shared_edge(tri, next_quad)
     if shared is None or not _is_manifold_edge(shared):
         if debug:
@@ -577,11 +670,20 @@ def propagate_triangle_once(bm, tri, next_quad, debug=None):
     if not candidates:
         return None, "Zipping would create an invalid or degenerate quad."
 
+    if toward_face is not None and toward_face.is_valid:
+        landing = [c for c in candidates
+                   if _tri_verts_share_edge_with_face(c["tri_verts"], toward_face)]
+        if landing:
+            candidates = landing
+        elif debug:
+            debug.log("no landing candidate onto face %d (%d sides)"
+                      % (toward_face.index, len(toward_face.verts)))
+
     candidates.sort(key=lambda item: item["score"], reverse=True)
     best = candidates[0]
     if debug:
-        debug.log("propagate tri %d through quad %d score=%.2f"
-                  % (tri.index, next_quad.index, best["score"]))
+        debug.log("propagate tri %d through quad %d score=%.2f kind=%s"
+                  % (tri.index, next_quad.index, best["score"], best.get("kind")))
 
     src_tri = best["src_tri"]
     src_quad = best["src_quad"]
@@ -622,6 +724,10 @@ def propagate_triangle_once(bm, tri, next_quad, debug=None):
         return None, "Zipping would create an invalid or degenerate quad. (%s)" % reason_q
     if not ok_t:
         return None, "Propagation produced an invalid triangle. (%s)" % reason_t
+
+    if toward_face is not None and toward_face.is_valid:
+        if _shared_edge(new_tri, toward_face) is None:
+            return None, "Lost strip adjacency during propagation."
 
     _ensure_tables(bm)
     return new_tri, "ok"
@@ -709,7 +815,7 @@ def zip_triangle_pair(bm, start_tri, end_tri, path, respect_features=True, debug
         return resolve_adjacent_triangles(bm, start_tri, end_tri, debug)
 
     current = start_tri
-    for face in path[1:-1]:
+    for i, face in enumerate(path[1:-1]):
         if not face.is_valid:
             return None, "Strip became invalid during propagation."
         if not current.is_valid:
@@ -717,7 +823,9 @@ def zip_triangle_pair(bm, start_tri, end_tri, path, respect_features=True, debug
         shared = _shared_edge(current, face)
         if shared is None:
             return None, "Lost strip adjacency during propagation."
-        current, msg = propagate_triangle_once(bm, current, face, debug)
+        toward = path[i + 2]  # next quad or the end triangle
+        current, msg = propagate_triangle_once(
+            bm, current, face, toward_face=toward, debug=debug)
         if current is None:
             return None, msg
 
@@ -738,10 +846,14 @@ def _normalize_pairs(pair_data):
 
 def _zip_selected_impl(bm, selected_faces, max_distance, respect_features, debug):
     selected_tris = [f for f in selected_faces if f.is_valid and len(f.verts) == 3]
-    debug.log("selected tris=%s" % [f.index for f in selected_tris])
+    selected_quads = [f for f in selected_faces if f.is_valid and len(f.verts) == 4]
+    corridor = set(selected_quads) if selected_quads else None
+    debug.log("selected tris=%s quads=%s"
+              % ([f.index for f in selected_tris], [f.index for f in selected_quads]))
 
     pair_data, message = find_triangle_pair(
-        bm, selected_tris, max_distance, respect_features, debug)
+        bm, selected_tris, max_distance, respect_features, debug,
+        corridor=corridor)
     if pair_data is None:
         return ZipResult(False, message, debug=debug)
 
