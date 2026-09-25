@@ -28,6 +28,16 @@ def register():
     bpy.types.Scene.quad_buddy = bpy.props.PointerProperty(
         type=props.QuadBuddySettings)
 
+    # Existing scenes keep old property defaults; migrate open-hole teal.
+    for scene in bpy.data.scenes:
+        settings = getattr(scene, 'quad_buddy', None)
+        if settings is None:
+            continue
+        color = tuple(round(c, 2) for c in settings.color_boundary)
+        if color in {(0.30, 0.80, 1.0, 0.90), (0.3, 0.8, 1.0, 0.9)}:
+            settings.color_boundary = (0.05, 0.82, 0.75, 0.95)
+            settings.show_boundary = True
+
     overlay.enable()
 
     if _on_depsgraph_update not in bpy.app.handlers.depsgraph_update_post:
