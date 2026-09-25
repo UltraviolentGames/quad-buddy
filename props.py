@@ -88,9 +88,9 @@ class QuadBuddySettings(PropertyGroup):
     )
 
     show_boundary: BoolProperty(
-        name="Open Boundaries",
-        description="Highlight edges with only one face. Mirror seams show up here",
-        default=False,
+        name="Open Holes",
+        description="Highlight open hole / boundary edges (edges with only one face)",
+        default=True,
         update=_refresh,
     )
 
@@ -183,12 +183,12 @@ class QuadBuddySettings(PropertyGroup):
     )
 
     color_boundary: FloatVectorProperty(
-        name="Boundary",
+        name="Open Holes",
         subtype='COLOR',
         size=4,
         min=0.0,
         max=1.0,
-        default=(0.30, 0.80, 1.0, 0.9),
+        default=(0.05, 0.82, 0.75, 0.95),
         update=_refresh,
     )
 

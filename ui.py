@@ -94,6 +94,9 @@ class QUADBUDDY_PT_main(BasePanel, Panel):
         if counts['nonmanifold']:
             grid.label(text="Non-manifold", icon='ERROR')
             grid.label(text=str(counts['nonmanifold']))
+        if settings.show_boundary and counts['boundary']:
+            grid.label(text="Open holes", icon='MESH_CIRCLE')
+            grid.label(text=str(counts['boundary']))
         if settings.show_poles and (counts['pole_high'] or counts['pole_low']):
             grid.label(text="Poles 5+ / 3", icon='VERTEXSEL')
             grid.label(text="%d / %d" % (counts['pole_high'], counts['pole_low']))
